@@ -573,7 +573,7 @@ public class GpuRayTracer {
                 Pointer.to(skyImage), 0, null, null);
     }
 
-    public float[] rayTrace(Vector3 origin, float[] rayDirs, float[] rayJitter, Random random, int rayDepth, boolean preview, Scene scene, int drawDepth, boolean drawEntities) {
+    public float[] rayTrace(float[] rayPos, float[] rayDirs, float[] rayJitter, Random random, int rayDepth, boolean preview, Scene scene, int drawDepth, boolean drawEntities) {
         // Load if necessary
         if (octreeData == null) {
             load(scene, null);
@@ -581,11 +581,6 @@ public class GpuRayTracer {
 
         // Results array
         float[] rayRes = new float[rayDirs.length];
-
-        float[] rayPos = new float[3];
-        rayPos[0] = (float) origin.x;
-        rayPos[1] = (float) origin.y;
-        rayPos[2] = (float) origin.z;
 
         Sun sun = scene.sun();
         float[] sunPos = new float[3];
@@ -596,9 +591,6 @@ public class GpuRayTracer {
         Pointer srcRayRes = Pointer.to(rayRes);
 
         // Transfer arguments to GPU memory
-        cl_mem clRayPos = clCreateBuffer(context,
-                CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                (long) Sizeof.cl_float * rayPos.length, Pointer.to(rayPos), null);
         cl_mem clRayDepth = clCreateBuffer(context,
                 CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
                 Sizeof.cl_int, Pointer.to(new int[] {rayDepth}), null);
@@ -619,6 +611,8 @@ public class GpuRayTracer {
                 Sizeof.cl_int, Pointer.to(new int[] {drawEntities ? 1 : 0}), null);
 
         // Batching arguments
+        cl_mem clRayPos = clCreateBuffer(context,
+                CL_MEM_READ_ONLY, (long) Sizeof.cl_float * batchSize * 3, null, null);
         cl_mem clRayDirs = clCreateBuffer(context,
                 CL_MEM_READ_ONLY, (long) Sizeof.cl_float * batchSize * 3, null, null);
         cl_mem clRayJitter = clCreateBuffer(context,
@@ -646,6 +640,9 @@ public class GpuRayTracer {
 
             // Copy batch onto GPU
             // TODO: Mess with non-blocking copy
+            clEnqueueWriteBuffer(commandQueue, clRayPos, CL_TRUE, 0, (long) Sizeof.cl_float * batchLength,
+                    Pointer.to(rayPos).withByteOffset(Sizeof.cl_float * index),
+                    0, null, null);
             clEnqueueWriteBuffer(commandQueue, clRayDirs, CL_TRUE, 0, (long) Sizeof.cl_float * batchLength,
                     Pointer.to(rayDirs).withByteOffset(Sizeof.cl_float * index),
                     0, null, null);

@@ -8,7 +8,9 @@ import se.llbit.chunky.renderer.scene.Scene;
 import se.llbit.chunky.resources.BitmapImage;
 import se.llbit.log.Log;
 import se.llbit.math.Ray;
+import se.llbit.math.Vector2;
 import se.llbit.math.Vector3;
+import se.llbit.math.Vector3i;
 import se.llbit.util.TaskTracker;
 
 import java.util.*;
@@ -223,29 +225,33 @@ public class RenderManagerCl extends Thread implements Renderer {
         double halfWidth = width / (2.0 * height);
         double invHeight = 1.0 / height;
 
-        float[] rayDirs = new float[width * height * 3];
+        float[] rayPos = new float[width * height * 3];
+        float[] rayDirs = new float[rayPos.length];
+
+        Vector3i sceneOrigin = bufferedScene.getOrigin();
 
         Camera cam = bufferedScene.camera();
-        Ray ray = new Ray();
 
-        for (int i = 0; i < width; i++) {
+        Chunky.getCommonThreads().submit(() -> IntStream.range(0, width).parallel().forEach(i -> {
+            Ray ray = new Ray();
             for (int j = 0; j < height; j++) {
-                cam.calcViewRay(ray, -halfWidth + i*invHeight, -.5 +  j*invHeight);
-                rayDirs[(j * width + i)*3 + 0] = (float) ray.d.x;
-                rayDirs[(j * width + i)*3 + 1] = (float) ray.d.y;
-                rayDirs[(j * width + i)*3 + 2] = (float) ray.d.z;
-            }
-        }
+                int offset = (j * width + i) * 3;
+                cam.calcViewRay(ray, -halfWidth + i*invHeight, -0.5 + j*invHeight);
 
-        Vector3 origin = ray.o;
-        origin.x -= bufferedScene.getOrigin().x;
-        origin.y -= bufferedScene.getOrigin().y;
-        origin.z -= bufferedScene.getOrigin().z;
+                rayPos[offset + 0] = (float) (ray.o.x - sceneOrigin.x);
+                rayPos[offset + 1] = (float) (ray.o.y - sceneOrigin.y);
+                rayPos[offset + 2] = (float) (ray.o.z - sceneOrigin.z);
+
+                rayDirs[offset + 0] = (float) ray.d.x;
+                rayDirs[offset + 1] = (float) ray.d.y;
+                rayDirs[offset + 2] = (float) ray.d.z;
+            }
+        })).join();
 
         double[] samples = bufferedScene.getSampleBuffer();
 
         // Do the rendering
-        float[] depthmap = intersectCl.rayTrace(origin, rayDirs, new float[rayDirs.length], random, 1, true, bufferedScene, drawDepth, drawEntities);
+        float[] depthmap = intersectCl.rayTrace(rayPos, rayDirs, new float[rayDirs.length], random, 1, true, bufferedScene, drawDepth, drawEntities);
 
         for (int i = 0; i < depthmap.length; i++) {
             samples[i] = depthmap[i];
@@ -267,7 +273,8 @@ public class RenderManagerCl extends Thread implements Renderer {
         double halfWidth = width / (2.0 * height);
         double invHeight = 1.0 / height;
 
-        float[] rayDirs = new float[width * height * 3];
+        float[] rayPos = new float[width * height * 3];
+        float[] rayDirs = new float[rayPos.length];
         float[] jitterDirs = new float[rayDirs.length];
 
         Camera cam = bufferedScene.camera();
@@ -275,10 +282,7 @@ public class RenderManagerCl extends Thread implements Renderer {
         // Render sky
         intersectCl.generateSky(bufferedScene);
 
-        Vector3 origin = cam.getPosition();
-        origin.x -= bufferedScene.getOrigin().x;
-        origin.y -= bufferedScene.getOrigin().y;
-        origin.z -= bufferedScene.getOrigin().z;
+        Vector3i sceneOrigin = bufferedScene.getOrigin();
 
         double[] samples = bufferedScene.getSampleBuffer();
 
@@ -294,6 +298,11 @@ public class RenderManagerCl extends Thread implements Renderer {
             for (int j = 0; j < height; j++) {
                 int offset = (j * width + i) * 3;
                 cam.calcViewRay(ray, -halfWidth + i*invHeight, -0.5 + j*invHeight);
+
+                rayPos[offset + 0] = (float) (ray.o.x - sceneOrigin.x);
+                rayPos[offset + 1] = (float) (ray.o.y - sceneOrigin.y);
+                rayPos[offset + 2] = (float) (ray.o.z - sceneOrigin.z);
+
                 rayDirs[offset + 0] = (float) ray.d.x;
                 rayDirs[offset + 1] = (float) ray.d.y;
                 rayDirs[offset + 2] = (float) ray.d.z;
@@ -315,7 +324,7 @@ public class RenderManagerCl extends Thread implements Renderer {
         for (int sample = bufferedScene.spp; sample < targetSpp; sample++) {
 
             // Do the rendering
-            float[] rendermap = intersectCl.rayTrace(origin, rayDirs, jitterDirs, random, bufferedScene.getRayDepth(), false, bufferedScene, drawDepth, drawEntities);
+            float[] rendermap = intersectCl.rayTrace(rayPos, rayDirs, jitterDirs, random, bufferedScene.getRayDepth(), false, bufferedScene, drawDepth, drawEntities);
 
             // Update the output buffer
             for (int i = 0; i < rendermap.length; i++) {

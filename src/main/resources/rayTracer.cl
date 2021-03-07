@@ -78,8 +78,11 @@ __kernel void rayTracer(__global const float *rayPos,
     xorshift(random);
     xorshift(random);
 
+    // Temp array
+    float3 temp;
+
     // Ray origin
-    float3 origin = (float3) (rayPos[0], rayPos[1], rayPos[2]);
+    float3 origin = vload3(gid, rayPos);
 
     // Ray direction
     float3 direction = normalize((float3) (
@@ -92,10 +95,7 @@ __kernel void rayTracer(__global const float *rayPos,
     float3 normal = (float3) (0, 0, 0);
 
     // Sun position
-    float3 sunPosition = (float3) (sunPos[0], sunPos[1], sunPos[2]);
-
-    // temp array
-    float3 temp;
+    float3 sunPosition = vload3(0, sunPos);
 
     // Cap max bounces at 23 since no dynamic memory allocation
     int maxbounces = *rayDepth;
