@@ -24,6 +24,7 @@ public class Finalizer {
         threads = new FinalizeWorker[renderer.getNumThreads()];
         for (int i = 0; i < threads.length; i++) {
             threads[i] = new FinalizeWorker(i, this);
+            threads[i].setDaemon(true);
             threads[i].start();
         }
     }
@@ -55,7 +56,7 @@ public class Finalizer {
         synchronized (startMonitor) {
             startMonitor.notifyAll();
         }
-        while (!isFinalizing());
+        while (!finalized());
         join();
     }
 
@@ -75,10 +76,20 @@ public class Finalizer {
         return Arrays.stream(threads).anyMatch(worker -> worker.finalizing);
     }
 
+    /** Check if all the threads have started finalizing. Resets flag if true. */
+    private boolean finalized() {
+        if (Arrays.stream(threads).allMatch(worker -> worker.finalized)) {
+            Arrays.stream(threads).forEach(worker -> worker.finalized = false);
+            return true;
+        }
+        return false;
+    }
+
     private class FinalizeWorker extends Thread {
         private final int id;
         private final Finalizer manager;
         protected volatile boolean finalizing = false;
+        protected volatile boolean finalized = false;
 
         public FinalizeWorker(int id, Finalizer finalizer) {
             super("Finalize Worker " + id);
@@ -94,8 +105,9 @@ public class Finalizer {
                     // Wait for notification to start finalizing pixels
                     synchronized (manager.startMonitor) {
                         manager.startMonitor.wait();
-                        finalizing = true;
                     }
+                    finalizing = true;
+                    finalized = true;
 
                     try {
                         this.finalize(manager.renderer.getBufferedScene(), manager.threads.length, manager.renderer.getCPULoad());

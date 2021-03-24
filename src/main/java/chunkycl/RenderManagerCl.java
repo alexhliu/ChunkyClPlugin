@@ -14,6 +14,7 @@ import se.llbit.math.Vector3i;
 import se.llbit.util.TaskTracker;
 
 import java.util.*;
+import java.util.concurrent.ForkJoinTask;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.stream.IntStream;
@@ -23,6 +24,7 @@ public class RenderManagerCl extends Thread implements Renderer {
     private Repaintable canvas = EMPTY_CANVAS;
 
     private Finalizer finalizer;
+    private boolean shouldFinalize = true;
     private final Scene bufferedScene;
     private final boolean headless;
     private int numThreads;
@@ -50,10 +52,12 @@ public class RenderManagerCl extends Thread implements Renderer {
     private int drawDepth = 256;
     private boolean drawEntities = true;
 
-    public static final GpuRayTracer intersectCl = new GpuRayTracer();
+    public static final GpuRayTracer intersectCl = GpuRayTracer.getTracer();
 
     public RenderManagerCl(RenderContext context, boolean headless) {
         super("Render Manager");
+
+        this.setPriority(Thread.MAX_PRIORITY);
 
         numThreads = context.numRenderThreads();
         cpuLoad = PersistentSettings.getCPULoad();
@@ -153,6 +157,71 @@ public class RenderManagerCl extends Thread implements Renderer {
         return bufferedScene;
     }
 
+    private void updateRenderState(Scene scene) {
+        shouldFinalize = scene.shouldFinalizeBuffer();
+        if (mode != scene.getMode()) {
+            mode = scene.getMode();
+            renderListeners.forEach(listener -> listener.renderStateChanged(mode));
+        }
+    }
+
+    private synchronized void sendSceneStatus(String status) {
+        for (SceneStatusListener listener : sceneListeners) {
+            listener.sceneStatus(status);
+        }
+    }
+
+    private float[] generateCameraRays() {
+        // Generate camera starting rays
+        int width = bufferedScene.canvasWidth();
+        int height = bufferedScene.canvasHeight();
+
+        double halfWidth = width / (2.0 * height);
+        double invHeight = 1.0 / height;
+
+        float[] rayDirs = new float[width * height * 3];
+
+        Camera cam = bufferedScene.camera();
+
+        Chunky.getCommonThreads().submit(() -> IntStream.range(0, width).parallel().forEach(i -> {
+            Ray ray = new Ray();
+            for (int j = 0; j < height; j++) {
+                int offset = (j * width + i) * 3;
+                cam.calcViewRay(ray, -halfWidth + i * invHeight, -0.5 + j*invHeight);
+
+                rayDirs[offset + 0] = (float) ray.d.x;
+                rayDirs[offset + 1] = (float) ray.d.y;
+                rayDirs[offset + 2] = (float) ray.d.z;
+            }
+        })).join();
+
+        return rayDirs;
+    }
+
+    private float[] generateJitterLengths(float[] rayDirs) {
+        int width = bufferedScene.canvasWidth();
+        int height = bufferedScene.canvasHeight();
+
+        double halfWidth = width / (2.0 * height);
+        double invHeight = 1.0 / height;
+
+        float[] jitterDirs = new float[width * height * 3];
+
+        Camera cam = bufferedScene.camera();
+
+        Chunky.getCommonThreads().submit(() -> IntStream.range(0, width).parallel().forEach(i -> {
+            Ray ray = new Ray();
+            for (int j = 0; j < height; j++) {
+                int offset = (j * width + i) * 3;
+                cam.calcViewRay(ray, -halfWidth + (i+1)*invHeight, -0.5 + (j+1)*invHeight);
+                jitterDirs[offset + 0] = (float) ray.d.x - rayDirs[offset + 0];
+                jitterDirs[offset + 1] = (float) ray.d.y - rayDirs[offset + 1];
+                jitterDirs[offset + 2] = (float) ray.d.z - rayDirs[offset + 2];
+            }
+        })).join();
+
+        return jitterDirs;
+    }
 
     @Override public void run() {
         try {
@@ -172,38 +241,39 @@ public class RenderManagerCl extends Thread implements Renderer {
                         }
 
                         bufferedScene.copyTransients(scene);
+                        updateRenderState(scene);
 
                         if (reason == ResetReason.SCENE_LOADED) {
                             bufferedScene.swapBuffers();
 
-                            String sceneStatus = bufferedScene.sceneStatus();
-                            synchronized (sceneListeners) {
-                                for (SceneStatusListener listener : sceneListeners) {
-                                    listener.sceneStatus(sceneStatus);
-                                }
-                            }
+                            sendSceneStatus(bufferedScene.sceneStatus());
                         }
                     });
-
-                    mode = bufferedScene.getMode();
                 }
 
                 if (mode == RenderMode.PREVIEW) {
-
                     System.out.println("Previewing");
-
                     previewRender();
-
-                    renderTask.update("Preview", 1, 1, "");
                 } else {
                     System.out.println("Rendering");
 
-                    int targetSpp;
-                    targetSpp = bufferedScene.getTargetSpp();
+                    int spp, targetSpp;
+                    synchronized (bufferedScene) {
+                        spp = bufferedScene.spp;
+                        targetSpp = bufferedScene.getTargetSpp();
+                        if (spp < targetSpp) {
+                            updateRenderProgress();
+                        }
+                    }
 
-                    intersectCl.load(bufferedScene, renderTask);
-
-                    finalRenderer(targetSpp, renderTask);
+                    if (spp < targetSpp) {
+                        finalRenderer();
+                    } else {
+                        sceneProvider.withEditSceneProtected(scene -> {
+                            scene.pauseRender();
+                            updateRenderState(scene);
+                        });
+                    }
                 }
 
                 if (headless) {
@@ -218,126 +288,113 @@ public class RenderManagerCl extends Thread implements Renderer {
     }
 
     private void previewRender() throws InterruptedException {
-        // Generate camera starting rays
-        int width = bufferedScene.canvasWidth();
-        int height = bufferedScene.canvasHeight();
+        // Start tasktracker
+        renderTask.update("Preview", 1, 0, "");
 
-        double halfWidth = width / (2.0 * height);
-        double invHeight = 1.0 / height;
+        // Generate camera rays
+        float[] rayDirs = generateCameraRays();
 
-        float[] rayPos = new float[width * height * 3];
-        float[] rayDirs = new float[rayPos.length];
-
-        Vector3i sceneOrigin = bufferedScene.getOrigin();
-
-        Camera cam = bufferedScene.camera();
-
-        Chunky.getCommonThreads().submit(() -> IntStream.range(0, width).parallel().forEach(i -> {
-            Ray ray = new Ray();
-            for (int j = 0; j < height; j++) {
-                int offset = (j * width + i) * 3;
-                cam.calcViewRay(ray, -halfWidth + i*invHeight, -0.5 + j*invHeight);
-
-                rayPos[offset + 0] = (float) (ray.o.x - sceneOrigin.x);
-                rayPos[offset + 1] = (float) (ray.o.y - sceneOrigin.y);
-                rayPos[offset + 2] = (float) (ray.o.z - sceneOrigin.z);
-
-                rayDirs[offset + 0] = (float) ray.d.x;
-                rayDirs[offset + 1] = (float) ray.d.y;
-                rayDirs[offset + 2] = (float) ray.d.z;
-            }
-        })).join();
-
-        double[] samples = bufferedScene.getSampleBuffer();
+        Vector3 origin = bufferedScene.camera().getPosition();
+        origin.sub(bufferedScene.getOrigin());
 
         // Do the rendering
-        float[] depthmap = intersectCl.rayTrace(rayPos, rayDirs, new float[rayDirs.length], random, 1, true, bufferedScene, drawDepth, drawEntities);
+        float[] rendermap = intersectCl.rayTrace(origin, rayDirs, new float[rayDirs.length], random, 1, true, bufferedScene, drawDepth, drawEntities);
 
-        for (int i = 0; i < depthmap.length; i++) {
-            samples[i] = depthmap[i];
-        }
+        // Copy the samples over
+        double[] samples = bufferedScene.getSampleBuffer();
+        Chunky.getCommonThreads().submit(() -> Arrays.parallelSetAll(samples, i -> rendermap[i])).join();
 
         // Tell worker threads to finalize all pixels and exit
         finalizer.finalizeOnce();
         bufferedScene.swapBuffers();
+
+        // Update render status display
+        renderListeners.forEach(listener -> {
+            listener.setRenderTime(0);
+            listener.setSamplesPerSecond(0);
+            listener.setSpp(1);
+        });
+
+        // Update task tracker
+        renderTask.update("Preview", 1, 1, "");
+
         canvas.repaint();
     }
 
-    private void finalRenderer(int targetSpp, TaskTracker.Task renderTask) throws InterruptedException {
-        renderTask.update("Rendering", targetSpp, 0);
-
-        // Generate camera rays
-        int width = bufferedScene.canvasWidth();
-        int height = bufferedScene.canvasHeight();
-
-        double halfWidth = width / (2.0 * height);
-        double invHeight = 1.0 / height;
-
-        float[] rayPos = new float[width * height * 3];
-        float[] rayDirs = new float[rayPos.length];
-        float[] jitterDirs = new float[rayDirs.length];
-
-        Camera cam = bufferedScene.camera();
-
-        // Render sky
+    private void finalRenderer() throws InterruptedException {
+        // Reload everything
+        intersectCl.load(bufferedScene, renderTask);
         intersectCl.generateSky(bufferedScene);
 
-        Vector3i sceneOrigin = bufferedScene.getOrigin();
+        // Start render task
+        renderTask.update("Rendering", bufferedScene.getTargetSpp(), bufferedScene.spp);
+
+        // Generate camera rays
+        float[] rayDirs = generateCameraRays();
+        float[] jitterDirs = generateJitterLengths(rayDirs);
+
+        Vector3 origin = new Vector3(bufferedScene.camera().getPosition());
+        origin.sub(bufferedScene.getOrigin());
 
         double[] samples = bufferedScene.getSampleBuffer();
 
-        long startTime = System.currentTimeMillis();
-        long updateTime = startTime;
+        // Create ray tracing cache
+        GpuRayTracer.RayTraceCache cache = intersectCl.createCache(rayDirs, jitterDirs);
+
+        // Merging task, let it run while the GPU is busy
+        ForkJoinTask mergeTask = null;
 
         // Tell the render workers to continuously finalize all pixels
-        finalizer.finalizeSoon();
+        if (shouldFinalize) {
+            finalizer.finalizeSoon();
+        }
 
-        // Generate ray directions
-        Chunky.getCommonThreads().submit(() -> IntStream.range(0, width).parallel().forEach(i -> {
-            Ray ray = new Ray();
-            for (int j = 0; j < height; j++) {
-                int offset = (j * width + i) * 3;
-                cam.calcViewRay(ray, -halfWidth + i*invHeight, -0.5 + j*invHeight);
+        while (bufferedScene.spp < bufferedScene.getTargetSpp()) {
+            // Start time
+            long frameStart = System.currentTimeMillis();
 
-                rayPos[offset + 0] = (float) (ray.o.x - sceneOrigin.x);
-                rayPos[offset + 1] = (float) (ray.o.y - sceneOrigin.y);
-                rayPos[offset + 2] = (float) (ray.o.z - sceneOrigin.z);
+            // Update stuff
+            sceneProvider.withSceneProtected(scene -> {
+                synchronized (bufferedScene) {
+                    bufferedScene.copyTransients(scene);
+                    updateRenderState(scene);
+                }
+            });
 
-                rayDirs[offset + 0] = (float) ray.d.x;
-                rayDirs[offset + 1] = (float) ray.d.y;
-                rayDirs[offset + 2] = (float) ray.d.z;
+            // Check if render was canceled
+            if (mode == RenderMode.PAUSED || sceneProvider.pollSceneStateChange()) {
+                finalizer.finalizeOnce();
+                bufferedScene.swapBuffers();
+                canvas.repaint();
+                cache.release();
+                return;
             }
-        })).join();
-
-        // Generate jitter lengths
-        Chunky.getCommonThreads().submit(() -> IntStream.range(0, width).parallel().forEach(i -> {
-            Ray ray = new Ray();
-            for (int j = 0; j < height; j++) {
-                int offset = (j * width + i) * 3;
-                cam.calcViewRay(ray, -halfWidth + (i+1)*invHeight, -0.5 + (j+1)*invHeight);
-                jitterDirs[offset + 0] = (float) ray.d.x - rayDirs[offset + 0];
-                jitterDirs[offset + 1] = (float) ray.d.y - rayDirs[offset + 1];
-                jitterDirs[offset + 2] = (float) ray.d.z - rayDirs[offset + 2];
-            }
-        })).join();
-
-        for (int sample = bufferedScene.spp; sample < targetSpp; sample++) {
 
             // Do the rendering
-            float[] rendermap = intersectCl.rayTrace(rayPos, rayDirs, jitterDirs, random, bufferedScene.getRayDepth(), false, bufferedScene, drawDepth, drawEntities);
+            float[] rendermap = intersectCl.rayTrace(origin, random, bufferedScene.getRayDepth(), false, bufferedScene, drawDepth, drawEntities, cache);
+
+            if (mergeTask != null && !mergeTask.isDone()) mergeTask.join();
 
             // Update the output buffer
-            for (int i = 0; i < rendermap.length; i++) {
-                samples[i] = (samples[i] * bufferedScene.spp + rendermap[i]) / (bufferedScene.spp + 1);
+            int sppF = bufferedScene.spp;
+            mergeTask = Chunky.getCommonThreads().submit(() -> Arrays.parallelSetAll(samples, i ->
+                    (samples[i] * sppF + rendermap[i]) / (sppF + 1)));
+
+            // Finalize if necessary
+            if (snapshotControl.saveSnapshot(bufferedScene, sppF+1)) {
+                mergeTask.join();
+                finalizer.finalizeOnce();
             }
 
             // Update render bar
-            bufferedScene.renderTime = System.currentTimeMillis() - startTime;
-            bufferedScene.spp = sample + 1;
-            updateRenderProgress();
+            synchronized (bufferedScene) {
+                bufferedScene.renderTime += System.currentTimeMillis() - frameStart;
+                bufferedScene.spp += 1;
+                updateRenderProgress();
+            }
 
             // Update the screen
-            if (!finalizer.isFinalizing()) {
+            if (shouldFinalize && !finalizer.isFinalizing()) {
                 bufferedScene.swapBuffers();
                 canvas.repaint();
 
@@ -345,30 +402,20 @@ public class RenderManagerCl extends Thread implements Renderer {
             }
 
             // Update frame complete listener
-            if (sample % 32 == 0 || System.currentTimeMillis() > updateTime + 1000) {
-                frameCompleteListener.accept(bufferedScene, sample);
-                updateTime = System.currentTimeMillis();
-            }
-
-            // Check if render was canceled
-            if (mode == RenderMode.PAUSED || sceneProvider.pollSceneStateChange()) {
-                break;
-            }
+            frameCompleteListener.accept(bufferedScene, bufferedScene.spp);
         }
 
-        // Wait for render workers to finish
-        finalizer.stopNow();
+        if (mergeTask != null) mergeTask.join();
 
         // Ensure finalization
-        for (int i = 0; i < width; i++) {
-            for (int j = 0; j < height; j++) {
-                bufferedScene.finalizePixel(i, j);
-            }
-        }
+        finalizer.finalizeOnce();
 
         // Update the screen
         bufferedScene.swapBuffers();
         canvas.repaint();
+
+        // Release the GPU memory objects
+        cache.release();
 
         // Inform render is complete
         renderCompleteListener.accept(bufferedScene.renderTime, samplesPerSecond());

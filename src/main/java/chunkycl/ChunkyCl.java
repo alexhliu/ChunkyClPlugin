@@ -1,5 +1,6 @@
 package chunkycl;
 
+import javafx.scene.control.Button;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.Tooltip;
 import javafx.scene.layout.VBox;
@@ -7,7 +8,6 @@ import se.llbit.chunky.Plugin;
 import se.llbit.chunky.main.Chunky;
 import se.llbit.chunky.main.ChunkyOptions;
 import se.llbit.chunky.renderer.RenderController;
-import se.llbit.chunky.renderer.RendererFactory;
 import se.llbit.chunky.ui.ChunkyFx;
 import se.llbit.chunky.ui.IntegerAdjuster;
 import se.llbit.chunky.ui.render.AdvancedTab;
@@ -87,6 +87,15 @@ public class ChunkyCl implements Plugin {
 
                     // Add drawEntities after draw depth
                     ((VBox) ((AdvancedTab) tab).getContent()).getChildren().add(5, drawEntitiesCheckBox);
+
+                    Button deviceSelectorButton = new Button("Select OpenCL Device");
+                    deviceSelectorButton.setOnMouseClicked(event -> {
+                        GpuSelector selector = new GpuSelector();
+                        selector.show();
+                    });
+
+                    // Add OpenCL device selector after CPU Utilization
+                    ((VBox) ((AdvancedTab) tab).getContent()).getChildren().add(2, deviceSelectorButton);
                 }
             }
 
