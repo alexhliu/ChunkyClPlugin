@@ -13,6 +13,7 @@ void sunIntersect(float3 *direction, float4 *color, float3 *emittance, float3 su
 // Octree calculations
 int octreeIntersect(float3 *origin, float3 *direction, float3 *normal, float4 *color, float3 *emittance, float *dist, int drawDepth, image2d_t octreeData, int depth, __global const int *transparent, int transparentLength, image2d_t textures, image1d_t blockData, image2d_t grassTextures, image2d_t foliageTextures);
 void getTextureRay(float3 *origin, float3 *normal, float4 *color, float3 *emittance, int block, image2d_t textures, image1d_t blockData, image2d_t grassTextures, image2d_t foliageTextures, int depth);
+int getQuadtree(int x, int y, int depth, image2d_t quadtreeData);
 void exitBlock(float3 *origin, float3 *direction, float3 *normal, float *dist);
 
 // Entity calculations
@@ -329,6 +330,22 @@ void diffuseReflect(float3 *direction, float3 *normal, unsigned int *state) {
     (*direction).z = uz * tx + vz * ty + (*normal).z * tz;
 }
 
+int getQuadtree(int x, int z, int depth, image2d_t quadtreeData) {
+    int nodeIndex = 0;
+    int level = depth;
+    int data = indexi(quadtreeData, nodeIndex);
+    while (data > 0) {
+        level--;
+        int lx = 1 & (x >> level);
+        int lz = 1 & (z >> level);
+
+        nodeIndex = data + ((lx << 1) | lz);
+        data = indexi(quadtreeData, nodeIndex);
+    }
+
+    return -data;
+}
+
 // Calculate the texture value of a ray
 void getTextureRay(float3 *origin, float3 *normal, float4 *color, float3 *emittance, int block, image2d_t textures, image1d_t blockData, image2d_t grassTextures, image2d_t foliageTextures, int depth) {
     int bounds = 1 << depth;
@@ -374,23 +391,11 @@ void getTextureRay(float3 *origin, float3 *normal, float4 *color, float3 *emitta
 
     // Calculate tint
     if (blockD.w != 0) {
-        uint4 tintLookup;
+        unsigned int tintColor;
         if (blockD.w == 1) {
-            tintLookup = read_imageui(grassTextures, indexSampler, (int2)((b.x+bounds)/4, b.z+bounds));
+            tintColor = getQuadtree(b.x, b.z, depth, grassTextures);
         } else {
-            tintLookup = read_imageui(foliageTextures, indexSampler, (int2)((b.x+bounds)/4, b.z+bounds));
-        }
-        unsigned int tintColor = tintLookup.x;
-
-        switch ((int)(b.x + bounds) % 4) {
-            case 0:
-                tintColor = tintLookup.x;
-            case 1:
-                tintColor = tintLookup.y;
-            case 2:
-                tintColor = tintLookup.z;
-            default:
-                tintColor = tintLookup.w;
+            tintColor = getQuadtree(b.x, b.z, depth, foliageTextures);
         }
 
         // Separate argb and add to color

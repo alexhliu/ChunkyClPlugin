@@ -318,38 +318,42 @@ public class GpuRayTracer {
             renderTask.update("Loading Block Textures into GPU", 4, 2);
         }
 
-        // Load biome and foliage tinting
-        // Fetch the textures with reflection
+        // Load biome and foliage tinting into Quadtrees
         int bounds = 1 << octree.getDepth();
 
-        int[] grassTexture = new int[bounds * bounds * 4];
+        PackedQuadtree grassTexture = new PackedQuadtree(octree.getDepth());
         for (int i = 0; i < bounds*2; i++) {
             for (int j = 0; j < bounds*2; j++) {
                 float[] color = scene.getGrassColor(j-bounds, i-bounds);
-                grassTexture[i*bounds*2 + j] = (int)(256*color[0]) << 16 | (int)(256*color[1]) << 8 | (int)(256*color[2]);
+                grassTexture.set((int)(256*color[0]) << 16 | (int)(256*color[1]) << 8 | (int)(256*color[2]), i, j);
             }
         }
+        grassTexture.endFinalization();
 
-        int[] foliageTexture = new int[bounds * bounds * 4];
+        PackedQuadtree foliageTexture = new PackedQuadtree(octree.getDepth());
         for (int i = 0; i < bounds*2; i++) {
             for (int j = 0; j < bounds*2; j++) {
                 float[] color = scene.getFoliageColor(j-bounds, i-bounds);
-                foliageTexture[i*bounds*2 + j] = (int)(256*color[0]) << 16 | (int)(256*color[1]) << 8 | (int)(256*color[2]);
+                foliageTexture.set((int)(256*color[0]) << 16 | (int)(256*color[1]) << 8 | (int)(256*color[2]), i, j);
             }
         }
+        foliageTexture.endFinalization();
 
-        format.image_channel_data_type = CL_UNSIGNED_INT32;
+        format.image_channel_data_type = CL_SIGNED_INT32;
         format.image_channel_order = CL_RGBA;
         desc.image_type = CL_MEM_OBJECT_IMAGE2D;
-        desc.image_width = bounds / 2;
-        desc.image_height = bounds * 2L;
+        desc.image_width = FastMath.min(8192, grassTexture.treeData.length);
+        desc.image_height = grassTexture.treeData.length/8192 + 1;
 
         this.grassTextures = clCreateImage(context,
                 CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, format, desc,
-                Pointer.to(grassTexture), null);
+                Pointer.to(grassTexture.treeData), null);
+
+        desc.image_width = FastMath.min(8192, foliageTexture.treeData.length);
+        desc.image_height = foliageTexture.treeData.length/8192 + 1;
         this.foliageTextures = clCreateImage(context,
                 CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, format, desc,
-                Pointer.to(foliageTexture), null);
+                Pointer.to(foliageTexture.treeData), null);
 
         // Load all block textures into GPU texture memory
         // Load block texture data directly into an array which is dynamically sized for non-full blocks
