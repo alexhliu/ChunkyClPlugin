@@ -661,7 +661,7 @@ public class GpuRayTracer {
         return rayRes;
     }
 
-    public float[] rayTrace(Vector3 origin, Random random, int rayDepth, boolean preview, Scene scene, int drawDepth, boolean drawEntities, RayTraceCache cache) {
+    public float[] rayTrace(Random random, int rayDepth, boolean preview, Scene scene, int drawDepth, boolean drawEntities, RayTraceCache cache) {
         // Load if necessary
         if (octreeData == null) {
             load(scene, null);
@@ -670,11 +670,6 @@ public class GpuRayTracer {
         // Results array
         float[] rayRes = new float[cache.length];
 
-        float[] rayPos = new float[3];
-        rayPos[0] = (float) origin.x;
-        rayPos[1] = (float) origin.y;
-        rayPos[2] = (float) origin.z;
-
         Sun sun = scene.sun();
         float[] sunPos = new float[3];
         sunPos[0] = (float) (FastMath.cos(sun.getAzimuth()) * FastMath.cos(sun.getAltitude()));
@@ -682,9 +677,6 @@ public class GpuRayTracer {
         sunPos[2] = (float) (FastMath.sin(sun.getAzimuth()) * FastMath.cos(sun.getAltitude()));
 
         // Transfer arguments to GPU memory
-        cl_mem clRayPos = clCreateBuffer(context,
-                CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                (long) Sizeof.cl_float * rayPos.length, Pointer.to(rayPos), null);
         cl_mem clRayDepth = clCreateBuffer(context,
                 CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
                 Sizeof.cl_int, Pointer.to(new int[] {rayDepth}), null);
@@ -708,7 +700,7 @@ public class GpuRayTracer {
                 Sizeof.cl_int, Pointer.to(new int[]{random.nextInt()}), null);
 
         // Set the arguments
-        cl_mem[] arguments = {clRayPos, cache.clRayDirs, cache.clRayJitter, octreeDepth, octreeData, voxelLength, transparentArray, transparentLength,
+        cl_mem[] arguments = {cache.clRayPos, cache.clRayDirs, cache.clRayJitter, octreeDepth, octreeData, voxelLength, transparentArray, transparentLength,
                 blockTextures, blockData, clSeed, clRayDepth, clPreview, clSunPos, sunIndex, clSunIntensity, skyTexture, grassTextures, foliageTextures,
                 entityData, entityTrigs, bvhTextures, clDrawEntities, clDrawDepth, cache.clRayRes};
         for (int i = 0; i < arguments.length; i++) {
@@ -728,23 +720,26 @@ public class GpuRayTracer {
         }
 
         // Clean up
-        cl_mem[] releases = {clRayPos, clRayDepth, clSunPos, clPreview, clSunIntensity, clDrawDepth, clDrawEntities, clSeed};
+        cl_mem[] releases = {clRayDepth, clSunPos, clPreview, clSunIntensity, clDrawDepth, clDrawEntities, clSeed};
         Arrays.stream(releases).forEach(CL::clReleaseMemObject);
 
         return rayRes;
     }
 
-    public RayTraceCache createCache(float[] rayDirs, float[] rayJitter) {
-        return new RayTraceCache(rayDirs, rayJitter);
+    public RayTraceCache createCache(float[] rayPos, float[] rayDirs, float[] rayJitter) {
+        return new RayTraceCache(rayPos, rayDirs, rayJitter);
     }
 
     public class RayTraceCache {
+        protected cl_mem clRayPos;
         protected cl_mem clRayDirs;
         protected cl_mem clRayJitter;
         protected cl_mem clRayRes;
         protected int length;
 
-        protected RayTraceCache(float[] rayDirs, float[] rayJitter) {
+        protected RayTraceCache(float[] rayPos, float[] rayDirs, float[] rayJitter) {
+            clRayPos = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                    (long) Sizeof.cl_float * rayPos.length, Pointer.to(rayPos), null);
             clRayDirs = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
                     (long) Sizeof.cl_float * rayDirs.length, Pointer.to(rayDirs), null);
             clRayJitter = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
@@ -756,6 +751,7 @@ public class GpuRayTracer {
         }
 
         public void release() {
+            clReleaseMemObject(clRayPos);
             clReleaseMemObject(clRayDirs);
             clReleaseMemObject(clRayJitter);
             clReleaseMemObject(clRayRes);

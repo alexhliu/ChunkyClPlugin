@@ -11,6 +11,7 @@ import se.llbit.math.Ray;
 import se.llbit.math.Vector2;
 import se.llbit.math.Vector3;
 import se.llbit.math.Vector3i;
+import se.llbit.util.Pair;
 import se.llbit.util.TaskTracker;
 
 import java.util.*;
@@ -171,7 +172,7 @@ public class RenderManagerCl extends Thread implements Renderer {
         }
     }
 
-    private float[] generateCameraRays() {
+    private Pair<float[], float[]> generateCameraRays() {
         // Generate camera starting rays
         int width = bufferedScene.canvasWidth();
         int height = bufferedScene.canvasHeight();
@@ -179,15 +180,22 @@ public class RenderManagerCl extends Thread implements Renderer {
         double halfWidth = width / (2.0 * height);
         double invHeight = 1.0 / height;
 
+        float[] rayPos = new float[width * height * 3];
         float[] rayDirs = new float[width * height * 3];
 
         Camera cam = bufferedScene.camera();
+        Vector3i origin = bufferedScene.getOrigin();
 
         Chunky.getCommonThreads().submit(() -> IntStream.range(0, width).parallel().forEach(i -> {
             Ray ray = new Ray();
             for (int j = 0; j < height; j++) {
                 int offset = (j * width + i) * 3;
                 cam.calcViewRay(ray, -halfWidth + i * invHeight, -0.5 + j*invHeight);
+                ray.o.sub(origin);
+
+                rayPos[offset + 0] = (float) ray.o.x;
+                rayPos[offset + 1] = (float) ray.o.y;
+                rayPos[offset + 2] = (float) ray.o.z;
 
                 rayDirs[offset + 0] = (float) ray.d.x;
                 rayDirs[offset + 1] = (float) ray.d.y;
@@ -195,7 +203,7 @@ public class RenderManagerCl extends Thread implements Renderer {
             }
         })).join();
 
-        return rayDirs;
+        return new Pair<>(rayPos, rayDirs);
     }
 
     private float[] generateJitterLengths(float[] rayDirs) {
@@ -292,13 +300,12 @@ public class RenderManagerCl extends Thread implements Renderer {
         renderTask.update("Preview", 1, 0, "");
 
         // Generate camera rays
-        float[] rayDirs = generateCameraRays();
-
-        Vector3 origin = bufferedScene.camera().getPosition();
-        origin.sub(bufferedScene.getOrigin());
+        Pair<float[], float[]> cameraRays = generateCameraRays();
+        float[] rayPos = cameraRays.thing1;
+        float[] rayDirs = cameraRays.thing2;
 
         // Do the rendering
-        float[] rendermap = intersectCl.rayTrace(origin, rayDirs, new float[rayDirs.length], random, 1, true, bufferedScene, drawDepth, drawEntities);
+        float[] rendermap = intersectCl.rayTrace(rayPos, rayDirs, new float[rayDirs.length], random, 1, true, bufferedScene, drawDepth, drawEntities);
 
         // Copy the samples over
         double[] samples = bufferedScene.getSampleBuffer();
@@ -330,7 +337,9 @@ public class RenderManagerCl extends Thread implements Renderer {
         renderTask.update("Rendering", bufferedScene.getTargetSpp(), bufferedScene.spp);
 
         // Generate camera rays
-        float[] rayDirs = generateCameraRays();
+        Pair<float[], float[]> cameraRays = generateCameraRays();
+        float[] rayPos = cameraRays.thing1;
+        float[] rayDirs = cameraRays.thing2;
         float[] jitterDirs = generateJitterLengths(rayDirs);
 
         Vector3 origin = new Vector3(bufferedScene.camera().getPosition());
@@ -339,7 +348,7 @@ public class RenderManagerCl extends Thread implements Renderer {
         double[] samples = bufferedScene.getSampleBuffer();
 
         // Create ray tracing cache
-        GpuRayTracer.RayTraceCache cache = intersectCl.createCache(rayDirs, jitterDirs);
+        GpuRayTracer.RayTraceCache cache = intersectCl.createCache(rayPos, rayDirs, jitterDirs);
 
         // Merging task, let it run while the GPU is busy
         ForkJoinTask mergeTask = null;
@@ -371,7 +380,7 @@ public class RenderManagerCl extends Thread implements Renderer {
             }
 
             // Do the rendering
-            float[] rendermap = intersectCl.rayTrace(origin, random, bufferedScene.getRayDepth(), false, bufferedScene, drawDepth, drawEntities, cache);
+            float[] rendermap = intersectCl.rayTrace(random, bufferedScene.getRayDepth(), false, bufferedScene, drawDepth, drawEntities, cache);
 
             if (mergeTask != null && !mergeTask.isDone()) mergeTask.join();
 
