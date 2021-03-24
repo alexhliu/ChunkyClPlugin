@@ -13,6 +13,7 @@ void sunIntersect(float3 *direction, float4 *color, float3 *emittance, float3 su
 // Octree calculations
 int octreeIntersect(float3 *origin, float3 *direction, float3 *normal, float4 *color, float3 *emittance, float *dist, int drawDepth, image2d_t octreeData, int depth, __global const int *transparent, int transparentLength, image2d_t textures, image1d_t blockData, image2d_t grassTextures, image2d_t foliageTextures);
 int enterOctree(float3 *origin, float3 *direction, float *dist, int depth);
+int insideOctree(float3 *origin, int depth);
 void getTextureRay(float3 *origin, float3 *normal, float4 *color, float3 *emittance, int block, image2d_t textures, image1d_t blockData, image2d_t grassTextures, image2d_t foliageTextures, int depth);
 void exitBlock(float3 *origin, float3 *direction, float3 *normal, float *dist);
 
@@ -416,6 +417,10 @@ int octreeIntersect(float3 *origin, float3 *direction, float3 *normal, float4 *c
         return 0;
     }
 
+    if (!insideOctree(origin, depth)) {
+        distMarch += OFFSET;
+    }
+
     float3 invD = 1/ (*direction);
     float3 offsetD = -(*origin) * invD;
 
@@ -533,6 +538,12 @@ int enterOctree(float3 *origin, float3 *direction, float *dist, int depth) {
     float bounds[] = {0, size, 0, size, 0, size};
     int intersect = aabbIntersectDist(origin, direction, bounds, dist);
     return intersect;
+}
+
+int insideOctree(float3 *origin, int depth) {
+    float size = 1 << depth;
+    float bounds[] = {0, size, 0, size, 0, size};
+    return aabbInside(origin, bounds);
 }
 
 // Exit the current block. Based on chunky code.
