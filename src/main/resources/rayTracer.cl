@@ -12,6 +12,7 @@ void sunIntersect(float3 *direction, float4 *color, float3 *emittance, float3 su
 
 // Octree calculations
 int octreeIntersect(float3 *origin, float3 *direction, float3 *normal, float4 *color, float3 *emittance, float *dist, int drawDepth, image2d_t octreeData, int depth, __global const int *transparent, int transparentLength, image2d_t textures, image1d_t blockData, image2d_t grassTextures, image2d_t foliageTextures);
+int enterOctree(float3 *origin, float3 *direction, float *dist, int depth);
 void getTextureRay(float3 *origin, float3 *normal, float4 *color, float3 *emittance, int block, image2d_t textures, image1d_t blockData, image2d_t grassTextures, image2d_t foliageTextures, int depth);
 void exitBlock(float3 *origin, float3 *direction, float3 *normal, float *dist);
 
@@ -19,6 +20,7 @@ void exitBlock(float3 *origin, float3 *direction, float3 *normal, float *dist);
 int entityIntersect(float3 *origin, float3 *direction, float3 *normal, float4 *color, float3 *emittance, float *dist, image2d_t entityData, image2d_t entityTrigs, image2d_t entityTextures);
 int texturedTriangleIntersect(float3 *origin, float3 *direction, float3 *normal, float4 *color, float3 *emittance, float *dist, int index, image2d_t entityTrigs, image2d_t entityTextures);
 int aabbIntersect(float3 *origin, float3 *direction, float bounds[6]);
+int aabbIntersectDist(float3 *origin, float3 *direction, float bounds[6], float *dist);
 int aabbIntersectClose(float3 *origin, float3 *direction, float *dist, float bounds[6]);
 int aabbInside(float3 *origin, float bounds[6]);
 
@@ -410,6 +412,10 @@ int octreeIntersect(float3 *origin, float3 *direction, float3 *normal, float4 *c
     float3 normalMarch = (float3) ((*normal).x, (*normal).y, (*normal).z);
     float distMarch = 0;
 
+    if (!enterOctree(origin, direction, &distMarch, depth)) {
+        return 0;
+    }
+
     float3 invD = 1/ (*direction);
     float3 offsetD = -(*origin) * invD;
 
@@ -520,6 +526,13 @@ int octreeIntersect(float3 *origin, float3 *direction, float3 *normal, float4 *c
     }
 
     return 0;
+}
+
+int enterOctree(float3 *origin, float3 *direction, float *dist, int depth) {
+    float size = 1 << depth;
+    float bounds[] = {0, size, 0, size, 0, size};
+    int intersect = aabbIntersectDist(origin, direction, bounds, dist);
+    return intersect;
 }
 
 // Exit the current block. Based on chunky code.
@@ -647,6 +660,28 @@ int aabbIntersect(float3 *origin, float3 *direction, float bounds[6]) {
     float tmax = fmin(fmin(fmax(tx1, tx2), fmax(ty1, ty2)), fmax(tz1, tz2));
 
     return tmin <= tmax+OFFSET && tmin >= 0;
+}
+
+int aabbIntersectDist(float3 *origin, float3 *direction, float bounds[6], float *dist) {
+    if (aabbInside(origin, bounds)) return 1;
+
+    float3 r = 1 / *direction;
+
+    float tx1 = (bounds[0] - (*origin).x) * r.x;
+    float tx2 = (bounds[1] - (*origin).x) * r.x;
+
+    float ty1 = (bounds[2] - (*origin).y) * r.y;
+    float ty2 = (bounds[3] - (*origin).y) * r.y;
+
+    float tz1 = (bounds[4] - (*origin).z) * r.z;
+    float tz2 = (bounds[5] - (*origin).z) * r.z;
+
+    float tmin = fmax(fmax(fmin(tx1, tx2), fmin(ty1, ty2)), fmin(tz1, tz2));
+    float tmax = fmin(fmin(fmax(tx1, tx2), fmax(ty1, ty2)), fmax(tz1, tz2));
+
+    int intersect = tmin <= tmax+OFFSET && tmin >= 0;
+    if (intersect) *dist += tmin;
+    return intersect;
 }
 
 int aabbIntersectClose(float3 *origin, float3 *direction, float *dist, float bounds[6]) {
