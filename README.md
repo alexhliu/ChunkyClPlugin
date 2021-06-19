@@ -33,7 +33,7 @@ Select `ChunkyCL` as your renderer for the scene in the `Advanced` tab.
 
 Rough performance with a RTX 2070 is around 10 times that of the traditional CPU renderer as of 2021-02-02.
 
-Decreasing `Render threads` or `CPU utilization` may improve GPU performance. A good starting point is 1 `render thread` at 100% `CPU utilization`. In addition, if you don't want/need to render entities, disable the `Enable entities` checkbox.
+Decreasing `Render threads` or `CPU utilization` may improve GPU performance. A good starting point is 1 `render thread` at 100% `CPU utilization`.
 
 ## Compatibility
 
